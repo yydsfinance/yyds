@@ -495,6 +495,7 @@ contract YYDS is ERC20, Ownable {
 
     uint256 public numTokenValueSellToSwap = 3000 * 1e18;
     uint256 public maxTokenVaulePerTx = 100 * 1e18;
+    uint256 public maxTokenVauleSellPerTx = 100 * 1e18;
     uint256 public minAmountDeflation = 2000 * 1e18;
     uint256 public minAmountBurn = 2000 * 1e18;
     uint256 public intervalDays = 7;
@@ -587,6 +588,10 @@ contract YYDS is ERC20, Ownable {
 
     function setMaxTokenVaulePerTx(uint _maxTokenVaulePerTx) external onlyOwner {
         maxTokenVaulePerTx = _maxTokenVaulePerTx;
+    }
+
+    function setMaxTokenVauleSellPerTx(uint _maxTokenVauleSellPerTx) external onlyOwner {
+        maxTokenVauleSellPerTx = _maxTokenVauleSellPerTx;
     }
     
     function setIntervalDays(uint _intervalDays) external onlyOwner {
@@ -731,6 +736,11 @@ contract YYDS is ERC20, Ownable {
                 feeToThis = buyMarketingFee;
             } else if (isPair[recipient]) {
                 feeToThis = sellMarketingFee;
+                address[] memory path = new address[](2);
+                path[0] = address(this);
+                path[1] = USDT;
+                uint[] memory amountsOut = IUniswapV2Router02(ROUTER).getAmountsOut(amount, path);
+                require(amountsOut[1] <= maxTokenVauleSellPerTx, "max usdt sell limit");
             } 
 
             if(feeToThis > 0) {
@@ -780,6 +790,7 @@ interface IUniswapV2Router01 {
     function factory() external pure returns (address);
     function WETH() external pure returns (address);
     function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts);
+    function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
 }
 
 interface IUniswapV2Router02 is IUniswapV2Router01 {
