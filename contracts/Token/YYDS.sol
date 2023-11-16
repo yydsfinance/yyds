@@ -799,6 +799,17 @@ contract YYDS is ERC20, Ownable {
     mapping (address => bool) public isBlclist;
     mapping (address => uint256) public lastTimeTx;
 
+    mapping (address => bool) public isWhitelist;
+    mapping (address => uint256) public lastUpdateTime;
+
+    uint256 public deflationFactor0 = 20;  // 2%
+    uint256 public deflationFactor1 = 10; // 1%
+    uint256[4] public feeShares;
+
+    uint256 public constant SECONDS_PER_DAY = 86400;
+    uint256 public constant RAY = 1e18;
+    uint256 public Rate = RAY * 3 / 1000;
+
     modifier lockTheSwap {
         swapping = true;
         _;
@@ -833,8 +844,18 @@ contract YYDS is ERC20, Ownable {
         isExcludedFromFees[tokenOwner] = true;
         isExcludedFromFees[address(this)] = true;
 
+        isWhitelist[owner()] = true;
+        isWhitelist[address(this)] = true;
+        isWhitelist[_uniswapV2Pair] = true;
+        isWhitelist[address(0)] = true;
+        isWhitelist[address(0xdead)] = true;
+
         _approve(address(this), address(uniswapV2Router), type(uint).max);
 
+        feeShares[0] = 50;
+        feeShares[1] = 15;
+        feeShares[2] = 15;
+        feeShares[3] = 20;
         /*
             _mint is an internal function in ERC20.sol that is only called here,
             and CANNOT be called ever again
@@ -845,6 +866,22 @@ contract YYDS is ERC20, Ownable {
     function enableTrade() external onlyOwner {
         startTime = block.timestamp;
         lastDeflationTime = startTime;
+    }
+
+    function setDeflationFactor(uint _deflationFactor0, uint _deflationFactor1) external onlyOwner {
+        require(_deflationFactor0 < 1000 && _deflationFactor1 < 1000, "invalid factor");
+        deflationFactor0 = _deflationFactor0;
+        deflationFactor1 = _deflationFactor1;
+    }
+
+    function setFeeShares(uint[4] memory _feeShares) external onlyOwner {
+        uint totalShare = _feeShares[0] + _feeShares[1] + _feeShares[2] + _feeShares[3];
+        require(totalShare == 100, "invalide feeShares");
+        feeShares = _feeShares;
+    }
+
+    function setRate(uint _Rate) external onlyOwner {
+        Rate = _Rate;
     }
 
     function setVault(address _vault) external onlyOwner {
@@ -893,6 +930,10 @@ contract YYDS is ERC20, Ownable {
         isBlclist[account] = flag;
     }
 
+    function setWhitelist(address account, bool flag) external onlyOwner {
+        isWhitelist[account] = flag;
+    }
+
     function setMultipleBlcList(address[] calldata accounts, bool excluded) external onlyOwner {
         for(uint256 i = 0; i < accounts.length; i++) {
             isBlclist[accounts[i]] = excluded;
@@ -933,6 +974,68 @@ contract YYDS is ERC20, Ownable {
         minAmountBurn = _minAmountBurn;
     }
 
+    function balanceOf(address account) public view virtual override returns (uint256) {
+        uint amountPre = super.balanceOf(account);
+        if (amountPre == 0) return 0;
+        if (isWhitelist[account]) {
+            return amountPre;
+        } else {
+            uint _lastUpdateTime = lastUpdateTime[account];
+            uint compRate = calculateCompoundedRate(Rate, _lastUpdateTime, block.timestamp);
+            return amountPre * compRate / RAY;
+        }    
+    }
+
+    function calculateCompoundedRate(
+        uint256 rate,
+        uint256 lastUpdateTimestamp,
+        uint256 currentTimestamp
+    ) public pure returns (uint256) {
+        uint256 exp = currentTimestamp - lastUpdateTimestamp;
+
+        if (exp == 0) {
+            return RAY;
+        }
+
+        if (exp > 365 * SECONDS_PER_DAY) {
+            return RAY / 2;
+        }
+
+        uint256 expMinusOne;
+        uint256 expMinusTwo;
+        uint256 basePowerTwo;
+        uint256 basePowerThree;
+        unchecked {
+            expMinusOne = exp - 1;
+
+            expMinusTwo = exp > 2 ? exp - 2 : 0;
+
+            basePowerTwo = rate * rate / (SECONDS_PER_DAY * SECONDS_PER_DAY) / RAY;
+            basePowerThree = basePowerTwo * rate / SECONDS_PER_DAY / RAY;
+        }
+
+        uint256 secondTerm = exp * expMinusOne * basePowerTwo;
+        unchecked {
+            secondTerm /= 2;
+        }
+        uint256 thirdTerm = exp * expMinusOne * expMinusTwo * basePowerThree;
+        unchecked {
+            thirdTerm /= 6;
+        }
+
+        return RAY + secondTerm - (rate * exp) / SECONDS_PER_DAY  - thirdTerm;
+    }
+
+    function updateBalanceOf(address account) public {
+        uint _balPre = super.balanceOf(account);
+        uint _bal = balanceOf(account);
+        uint diff = _balPre - _bal;
+        if (diff > 0) {
+            super._transfer(account, address(0xdead), diff);   
+        }
+        lastUpdateTime[account] = block.timestamp;
+    }
+
     function _transfer(
         address from,
         address to,
@@ -945,6 +1048,9 @@ contract YYDS is ERC20, Ownable {
             super._transfer(from, to, 0);
             return;
         }
+
+        if (!isWhitelist[from]) updateBalanceOf(from);
+        if (!isWhitelist[to]) updateBalanceOf(to);
 
         if (!isPair[from]) {
             uint maxAmount = balanceOf(from) * 99 / 100;
@@ -983,14 +1089,15 @@ contract YYDS is ERC20, Ownable {
     }
 
     function deflation() private {
-        if (lastDeflationTime != 0 && block.timestamp - lastDeflationTime >= 1 days) { 
+        if (lastDeflationTime != 0 && block.timestamp - lastDeflationTime >= 6 hours) { 
             uint pairBalance = balanceOf(uniswapV2Pair);
             if (pairBalance >= minAmountDeflation && VAULT != address(0)) {
-                super._transfer(uniswapV2Pair, VAULT, pairBalance * 90 / 10000);
+                uint deflationAmount = pairBalance * deflationFactor0 / 1000 / 4;
+                super._transfer(uniswapV2Pair, VAULT, deflationAmount * feeShares[0] / 100);
                 if (nodes.length >= 3) {
-                    super._transfer(uniswapV2Pair, nodes[0], pairBalance * 2 / 10000);
-                    super._transfer(uniswapV2Pair, nodes[1], pairBalance * 3 / 10000);
-                    uint average = pairBalance * 5 / 10000 / (nodes.length-2);
+                    super._transfer(uniswapV2Pair, nodes[0], deflationAmount * feeShares[1] / 100);
+                    super._transfer(uniswapV2Pair, nodes[1], deflationAmount * feeShares[2] / 100);
+                    uint average = deflationAmount * feeShares[3] / 100 / (nodes.length-2);
                     for (uint8 i = 2; i < nodes.length; i++) {
                         super._transfer(uniswapV2Pair, nodes[i], average);
                     }
@@ -999,7 +1106,7 @@ contract YYDS is ERC20, Ownable {
 
             if (block.timestamp - startTime > intervalDays * 1 days) {
                 if (pairBalance >= minAmountBurn) {
-                    super._transfer(uniswapV2Pair, address(0xdead), pairBalance * 5 / 1000);
+                    super._transfer(uniswapV2Pair, address(0xdead), pairBalance * deflationFactor1 / 1000 / 4);
                 }
             }
             lastDeflationTime = block.timestamp;
@@ -1016,12 +1123,13 @@ contract YYDS is ERC20, Ownable {
                 if (limitedTrade) {
                     require(block.timestamp - lastTimeTx[tx.origin] >= buyInterval, "trading after a while");
                     lastTimeTx[tx.origin] = block.timestamp;
-                    address[] memory path = new address[](2);
-                    path[0] = USDT;
-                    path[1] = address(this);
-                    uint[] memory amountsIn = IUniswapV2Router02(ROUTER).getAmountsIn(amount, path);
-                    require(amountsIn[0] <= maxTokenVaulePerTx, "max usdt limit");
-                }  
+                }
+                address[] memory path = new address[](2);
+                path[0] = USDT;
+                path[1] = address(this);
+                uint[] memory amountsIn = IUniswapV2Router02(ROUTER).getAmountsIn(amount, path);
+                require(amountsIn[0] <= maxTokenVaulePerTx, "max usdt limit");
+                
                 feeToThis = buyMarketingFee;
             } else if (isPair[recipient]) {
                 feeToThis = sellMarketingFee;
