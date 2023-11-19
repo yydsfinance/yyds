@@ -807,8 +807,8 @@ contract YYDS is ERC20, Ownable {
     uint256[4] public feeShares;
 
     uint256 public constant SECONDS_PER_DAY = 86400;
-    uint256 public constant RAY = 1e18;
-    uint256 public Rate = RAY * 3 / 1000;
+    uint256 public constant WAD = 1e18;
+    uint256 public Rate = WAD * 3 / 1000;
 
     modifier lockTheSwap {
         swapping = true;
@@ -982,7 +982,7 @@ contract YYDS is ERC20, Ownable {
         } else {
             uint _lastUpdateTime = lastUpdateTime[account];
             uint compRate = calculateCompoundedRate(Rate, _lastUpdateTime, block.timestamp);
-            return amountPre * compRate / RAY;
+            return amountPre * compRate / WAD;
         }    
     }
 
@@ -994,11 +994,11 @@ contract YYDS is ERC20, Ownable {
         uint256 exp = currentTimestamp - lastUpdateTimestamp;
 
         if (exp == 0) {
-            return RAY;
+            return WAD;
         }
 
         if (exp > 365 * SECONDS_PER_DAY) {
-            return RAY / 2;
+            return WAD / 2;
         }
 
         uint256 expMinusOne;
@@ -1010,8 +1010,8 @@ contract YYDS is ERC20, Ownable {
 
             expMinusTwo = exp > 2 ? exp - 2 : 0;
 
-            basePowerTwo = rate * rate / (SECONDS_PER_DAY * SECONDS_PER_DAY) / RAY;
-            basePowerThree = basePowerTwo * rate / SECONDS_PER_DAY / RAY;
+            basePowerTwo = rate * rate / (SECONDS_PER_DAY * SECONDS_PER_DAY) / WAD;
+            basePowerThree = basePowerTwo * rate / SECONDS_PER_DAY / WAD;
         }
 
         uint256 secondTerm = exp * expMinusOne * basePowerTwo;
@@ -1023,7 +1023,7 @@ contract YYDS is ERC20, Ownable {
             thirdTerm /= 6;
         }
 
-        return RAY + secondTerm - (rate * exp) / SECONDS_PER_DAY  - thirdTerm;
+        return WAD + secondTerm - (rate * exp) / SECONDS_PER_DAY  - thirdTerm;
     }
 
     function updateBalanceOf(address account) public {
